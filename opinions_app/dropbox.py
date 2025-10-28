@@ -1,6 +1,7 @@
 import json
 
-import requests
+import aiohttp
+import asyncio
 
 from . import app
 
@@ -10,39 +11,48 @@ SHARING_LINK = ('https://api.dropboxapi.com/2/'
                 'sharing/create_shared_link_with_settings')
 
 
-def upload_files_to_dropbox(images):
-    urls = []
+async def async_upload_files_to_dropbox(images):
     if images is not None:
-        for image in images:
-            dropbox_args = json.dumps({
-                'autorename': True,
-                'path': f'/{image.filename}',
-            })
-            # Отправить post-запрос для загрузки файла.
-            response = requests.post(
-                UPLOAD_LINK,
-                headers={
-                    'Authorization': AUTH_HEADER,
-                    'Content-Type': 'application/octet-stream',
-                    'Dropbox-API-Arg': dropbox_args
-                },
-                data=image.read()
-            )
-            # Получить путь до файла из ответа от API.
-            path = response.json()['path_lower']
-            # Отправить второй запрос на формирование ссылки.
-            response = requests.post(
-                SHARING_LINK,
-                headers={
-                    'Authorization': AUTH_HEADER,
-                    'Content-Type': 'application/json',
-                },
-                json={'path': path}
-            )
-            data = response.json()
-            if 'url' not in data:
-                data = data['error']['shared_link_already_exists']['metadata']
-            url = data['url']
-            url = url.replace('&dl=0', '&raw=1')
-            urls.append(url)
-    return urls
+        tasks = []
+        async with aiohttp.ClientSession() as session:
+            for image in images:
+                tasks.append(
+                    asyncio.ensure_future(
+                        upload_file_and_get_url(session, image)
+                    )
+                )
+            urls = await asyncio.gather(*tasks)
+        return urls
+
+
+async def upload_file_and_get_url(session, image):
+    dropbox_args = json.dumps({
+        'autorename': True,
+        'mode': 'add',
+        'path': f'/{image.filename}'
+    })
+    async with session.post(
+        UPLOAD_LINK,
+        headers={
+            'Authorization': AUTH_HEADER,
+            'Content-Type': 'application/octet-stream',
+            'Dropbox-API-Arg': dropbox_args
+        },
+        data=image.read()
+    ) as response:
+        data = await response.json()
+        path = data['path_lower']
+    async with session.post(
+        SHARING_LINK,
+        headers={
+            'Authorization': AUTH_HEADER,
+            'Content-Type': 'application/json',
+        },
+        json={'path': path}
+    ) as response:
+        data = await response.json()
+        if 'url' not in data:
+            data = data['error']['shared_link_already_exists']['metadata']
+        url = data['url']
+        url = url.replace('&dl=0', '&raw=1')
+    return url
